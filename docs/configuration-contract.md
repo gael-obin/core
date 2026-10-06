@@ -79,3 +79,19 @@ environment carries, so no value is lost to a platform's environment limit;
 see [Runnable binding delivery](runnable-binding-delivery.md).
 
 See [the boundary and migration decision](core-cli-boundary.md).
+
+## Observability runtime handoff
+
+`wool/otel.ReadConfiguration` reads an observability group's strings through the
+consumer's framework accessor. `OBSERVABILITY_STATE` is mandatory: `enabled`
+requires an HTTP(S) `OTEL_EXPORTER_OTLP_ENDPOINT`, protocol `grpc`, and a declared
+collector tier; `disabled` requires `OBSERVABILITY_DISABLED_REASON`; `stdout`
+is the explicit local tracing mode. Disabled and stdout modes start no network
+exporter, even when a stale lower-priority endpoint remains.
+
+`EnableConfigured` validates this state before creating a trace provider. URL
+transport and exporter options remain owned by the official OpenTelemetry gRPC
+exporter. The configuration reader does not choose a collector, create one,
+grant network access, or modify the process environment. Infrastructure resolves
+the destination; the SDK supplies the workspace accessor; the CLI delivers it.
+Metrics consumers start their OTLP provider only for `enabled` state.

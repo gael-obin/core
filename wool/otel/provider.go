@@ -17,7 +17,6 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -29,15 +28,28 @@ import (
 type Option func(*config)
 
 type config struct {
-	endpoint    string
 	serviceName string
 	useStdout   bool
-	insecure    bool
+	hasEndpoint bool
+	grpcOptions []otlptracegrpc.Option
 }
 
 // WithEndpoint sets the OTLP collector endpoint (e.g. "localhost:4317").
 func WithEndpoint(endpoint string) Option {
-	return func(c *config) { c.endpoint = endpoint }
+	return func(c *config) {
+		c.hasEndpoint = true
+		c.grpcOptions = append(c.grpcOptions, otlptracegrpc.WithEndpoint(endpoint))
+	}
+}
+
+// WithEndpointURL sets a complete OTLP URL. The upstream exporter owns URL and
+// transport semantics: http uses plaintext; https uses TLS. WithEndpoint retains
+// the upstream host:port form for callers which explicitly choose that API.
+func WithEndpointURL(endpoint string) Option {
+	return func(c *config) {
+		c.hasEndpoint = true
+		c.grpcOptions = append(c.grpcOptions, otlptracegrpc.WithEndpointURL(endpoint))
+	}
 }
 
 // WithServiceName sets the service name for traces.
@@ -52,23 +64,16 @@ func WithStdout() Option {
 
 // WithInsecure disables TLS for the OTLP connection.
 func WithInsecure() Option {
-	return func(c *config) { c.insecure = true }
+	return func(c *config) { c.grpcOptions = append(c.grpcOptions, otlptracegrpc.WithInsecure()) }
 }
 
 // Enable creates an OTEL TelemetryProvider and registers it with wool.
 // If no options are provided, it reads from standard OTEL environment variables
 // (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME).
 func Enable(opts ...Option) (*Provider, error) {
-	cfg := &config{
-		endpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-		serviceName: os.Getenv("OTEL_SERVICE_NAME"),
-		insecure:    true,
-	}
+	cfg := &config{}
 	for _, opt := range opts {
 		opt(cfg)
-	}
-	if cfg.serviceName == "" {
-		cfg.serviceName = "unknown"
 	}
 
 	var exporter sdktrace.SpanExporter
@@ -76,17 +81,11 @@ func Enable(opts ...Option) (*Provider, error) {
 
 	if cfg.useStdout {
 		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
-	} else if cfg.endpoint != "" {
-		grpcOpts := []otlptracegrpc.Option{
-			otlptracegrpc.WithEndpoint(cfg.endpoint),
-		}
-		if cfg.insecure {
-			grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
-		}
-		exporter, err = otlptrace.New(
-			context.Background(),
-			otlptracegrpc.NewClient(grpcOpts...),
-		)
+	} else if cfg.hasEndpoint || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" {
+		// Let the official exporter read standard environment configuration,
+		// including signal-specific precedence, TLS, headers, timeout and retry.
+		// Explicit options retain the SDK's documented precedence over env values.
+		exporter, err = otlptracegrpc.New(context.Background(), cfg.grpcOptions...)
 	} else {
 		// No endpoint configured -- use stdout as fallback
 		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
@@ -95,13 +94,20 @@ func Enable(opts ...Option) (*Provider, error) {
 		return nil, err
 	}
 
-	res, err := resource.New(context.Background(),
-		resource.WithAttributes(
-			attribute.String("service.name", cfg.serviceName),
-			attribute.String("library.name", "wool"),
-		),
-	)
+	resourceOptions := []resource.Option{
+		resource.WithFromEnv(),
+		resource.WithTelemetrySDK(),
+		resource.WithAttributes(attribute.String("library.name", "wool")),
+	}
+	if cfg.serviceName != "" {
+		resourceOptions = append(resourceOptions, resource.WithAttributes(attribute.String("service.name", cfg.serviceName)))
+	}
+	res, err := resource.New(context.Background(), resourceOptions...)
+	if err == nil {
+		res, err = resource.Merge(resource.Default(), res)
+	}
 	if err != nil {
+		_ = exporter.Shutdown(context.Background())
 		return nil, err
 	}
 

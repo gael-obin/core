@@ -21,14 +21,14 @@ func NewAPI(_ context.Context, endpoint *Endpoint, api *basev0.API) (*basev0.End
 	if endpoint == nil {
 		return nil, fmt.Errorf("endpoint is nil")
 	}
-	return &basev0.Endpoint{
-		Module:     endpoint.Module,
-		Service:    endpoint.Service,
-		Name:       endpoint.Name,
-		Api:        APIString(api),
-		ApiDetails: api,
-		Visibility: endpoint.Visibility,
-	}, nil
+	declaration := *endpoint
+	declaration.API = APIString(api)
+	result, err := declaration.Proto()
+	if err != nil {
+		return nil, err
+	}
+	result.ApiDetails = api
+	return result, nil
 }
 
 func APIString(api *basev0.API) string {

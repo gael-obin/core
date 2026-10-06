@@ -34,3 +34,24 @@ func TestGRPC(t *testing.T) {
 		require.Equal(t, "OrganizationService", rpc.ServiceName)
 	}
 }
+
+func TestNewAPIPreservesEndpointAccess(t *testing.T) {
+	endpoint := &resources.Endpoint{
+		Module: "secrets", Service: "vault", Name: "http",
+		Visibility:   resources.VisibilityInternal,
+		AllowModules: []string{"host"}, Location: resources.LocationExternal,
+	}
+	api := resources.ToHTTPAPI(&basev0.HttpAPI{Secured: true})
+	got, err := resources.NewAPI(context.Background(), endpoint, api)
+	require.NoError(t, err)
+	require.NoError(t, resources.Validate(got))
+	require.Equal(t, resources.LocationExternal, got.GetLocation())
+	require.Same(t, api, got.GetApiDetails())
+	require.NoError(t, resources.ValidateEndpointVisibility("host", got.Module, got.Service, got.Name, got.Visibility, got.Location, got.AllowModules))
+	require.Error(t, resources.ValidateEndpointVisibility("unrelated", got.Module, got.Service, got.Name, got.Visibility, got.Location, got.AllowModules))
+	require.Empty(t, endpoint.API, "attaching API details must not mutate the declaration")
+
+	endpoint.Visibility = resources.VisibilityPrivate
+	_, err = resources.NewAPI(context.Background(), endpoint, api)
+	require.Error(t, err, "a private endpoint cannot carry an unread allow-list")
+}
